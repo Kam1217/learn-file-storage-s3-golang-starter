@@ -3,3 +3,11 @@ out
 .env
 assets/
 samples/
+vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+aws/
+awscliv2.zip

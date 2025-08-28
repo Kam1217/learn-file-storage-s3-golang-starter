@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -97,12 +99,27 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		directory = "other"
 	}
 
+	processedVideoPath, err := processVideoForFastStart(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error processing video", err)
+		return
+	}
+
+	fastStartVideoFile, err := os.Open(processedVideoPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error opening video file", err)
+		return
+	}
+
+	defer fastStartVideoFile.Close()
+	defer os.Remove(fastStartVideoFile.Name())
+
 	key := getAssetPath(mediaType)
 	key = path.Join(directory, key)
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &key,
-		Body:        tempFile,
+		Body:        fastStartVideoFile,
 		ContentType: &mediaType,
 	})
 	if err != nil {
@@ -118,4 +135,27 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	respondWithJSON(w, http.StatusOK, video)
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	outputFilePath := fmt.Sprintf("%s.processing", filePath)
+
+	cmd := exec.Command("ffmpeg", "-i", filePath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", outputFilePath)
+	buf := bytes.Buffer{}
+	cmd.Stdout = &buf
+
+	err := cmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("failed to run the command: %w", err)
+	}
+
+	fileInfo, err := os.Stat(outputFilePath)
+	if err != nil {
+		return "", fmt.Errorf("could not stat processed file: %v", err)
+	}
+	if fileInfo.Size() == 0 {
+		return "", fmt.Errorf("processed file is empty")
+	}
+
+	return outputFilePath, nil
 }
